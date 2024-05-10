@@ -1,14 +1,11 @@
-from django.conf import settings
-from django.contrib.auth import get_user_model
 from django.db import models
 from datetime import datetime
 from django.core.validators import ValidationError
 from django.utils import timezone
-from .choices import TaskStatus
+from .choices import TaskState, ScheduleType, ExchangeType
+from .schedule.config import get_next_schedule_time
 import re
-
-
-UserModel = get_user_model()
+import uuid
 
 
 def code_validator(value):
@@ -17,17 +14,15 @@ def code_validator(value):
 
 
 class Category(models.Model):
-    model = models.CharField(max_length=100, verbose_name='所属模型')
     parent = models.ForeignKey('self', blank=True, null=True, db_constraint=False, on_delete=models.CASCADE,
                                related_name='children', verbose_name='父类别')
-    name = models.CharField(max_length=50, verbose_name='名称')
+    name = models.CharField(max_length=50, verbose_name='名称', unique=True)
     create_time = models.DateTimeField(default=timezone.now, verbose_name='创建时间')
     update_time = models.DateTimeField(auto_now=True, verbose_name='更新时间')
 
     class Meta:
         db_table = 'ts_category'
         verbose_name = verbose_name_plural = '任务类别'
-        unique_together = ('name', 'user')
 
     def __str__(self):
         return self.name
@@ -36,14 +31,13 @@ class Category(models.Model):
 
 
 class Tag(models.Model):
-    name = models.CharField(max_length=50, verbose_name='标签名')
+    name = models.CharField(max_length=50, verbose_name='标签名', unique=True)
     create_time = models.DateTimeField(default=timezone.now, verbose_name='创建时间')
     update_time = models.DateTimeField(auto_now=True, verbose_name='更新时间')
 
     class Meta:
         db_table = 'ts_tag'
         verbose_name = verbose_name_plural = '任务标签'
-        unique_together = ('user', 'name')
 
     def __str__(self):
         return self.name
@@ -52,197 +46,162 @@ class Tag(models.Model):
 
 
 class Schedule(models.Model):
-    config = models.JSONField(default=dict, verbose_name='参数')
-    create_time = models.DateTimeField(default=timezone.now, verbose_name='创建时间')
-    update_time = models.DateTimeField(default=timezone.now, verbose_name='更新时间')
-
-    class Meta:
-        verbose_name = verbose_name_plural = '计划'
-        db_table = 'ts_schedule'
-
-    def generate_next_schedule(self):
-        try:
-            self.next_schedule_time = ScheduleConfig(config=self.config).get_next_time(self.next_schedule_time)
-        except Exception as e:
-            self.status = ScheduleStatus.ERROR.value
-            self.save(update_fields=('status',))
-            raise e
-        if self.next_schedule_time > self.schedule_end_time:
-            self.next_schedule_time = datetime.max
-            self.status = ScheduleStatus.DONE.value
-        self.save(update_fields=('next_schedule_time', 'status'))
-        return self
-
-    def __str__(self):
-        return self.config.name
-
-    __repr__ = __str__
-
-
-class Task(models.Model):
-    schedule = models.ForeignKey(Schedule, db_constraint=False, on_delete=models.SET_NULL, null=True, blank=True)
-    parent = models.ForeignKey('self', db_constraint=False, on_delete=models.CASCADE,
-                               null=True, blank=True, verbose_name='父任务')
-    name = models.CharField(max_length=100, verbose_name='任务名')
-    category = models.ForeignKey(Category, db_constraint=False, on_delete=models.DO_NOTHING, verbose_name='类别')
-    tags = models.ManyToManyField(Tag, blank=True, db_constraint=False, verbose_name='标签')
-    description = models.TextField(blank=True, null=True, verbose_name='描述')
-    priority = models.IntegerField(default=0, verbose_name='优先级')
-    next_start_time = models.DateTimeField(default=datetime.max, verbose_name='下次运行时间', db_index=True)
-    is_rigorous = models.BooleanField(default=False, verbose_name='严格模式')
-    # callback = models.ForeignKey(ScheduleCallback, on_delete=models.SET_NULL,
-    #                              null=True, blank=True, db_constraint=False, verbose_name='回调')
-    preserve_log = models.BooleanField(default=True, verbose_name='保留日志')
-    config = models.JSONField(blank=True, null=True, verbose_name='参数')
-    enabled = models.BooleanField(default=True, verbose_name='启用')
+    schedule_type = models.CharField(verbose_name='计划类型', max_length=20,
+                                     choices=ScheduleType.choices, default=ScheduleType.CRONTAB)
+    config = models.JSONField(verbose_name='参数')
     create_time = models.DateTimeField(default=timezone.now, verbose_name='创建时间')
     update_time = models.DateTimeField(auto_now=True, verbose_name='更新时间')
-
-    class Meta:
-        verbose_name = verbose_name_plural = '任务中心'
-        unique_together = (('name', 'parent'), )
-        db_table = 'ts_task'
-        swappable = 'TASK_MODEL'
-
-    def __str__(self):
-        return self.name
-
-    __repr__ = __str__
-
-    def __lt__(self, other):
-        return self.priority < other.priority
-
-    def __gt__(self, other):
-        return self.priority > other.priority
-
-
-class ScheduleCallback(models.Model):
-    id = models.AutoField(primary_key=True)
-    name = models.CharField(max_length=100, verbose_name='回调')
-    description = models.TextField(blank=True, null=True, verbose_name='描述')
-    trigger_event = common_fields.CharField(default=ScheduleCallbackEvent.DONE, choices=ScheduleCallbackEvent.choices,
-                                            verbose_name='触发事件')
-    status = common_fields.CharField(default=ScheduleCallbackStatus.ENABLE.value, verbose_name='状态',
-                                     choices=ScheduleCallbackStatus.choices)
-    config = common_fields.ConfigField(blank=True, null=True, verbose_name='参数')
-    user = models.ForeignKey(UserModel, on_delete=models.CASCADE, db_constraint=False, verbose_name='最后更新')
-    create_time = models.DateTimeField(default=timezone.now, verbose_name='创建时间')
-    update_time = models.DateTimeField(auto_now=True, verbose_name='更新时间')
-
-    class Meta:
-        verbose_name = verbose_name_plural = '计划回调'
-        # unique_together = (('name', 'user'), )
-        db_table = 'schedule_callback'
-
-    def __str__(self):
-        return self.name
-
-    __repr__ = __str__
-
-
-class AbstractSchedule(models.Model):
-    id = models.AutoField(primary_key=True)
-    task = models.OneToOneField(settings.TASK_MODEL, on_delete=models.CASCADE,
-                                db_constraint=False, verbose_name='任务')
-    priority = models.IntegerField(default=0, verbose_name='优先级')
-    next_schedule_time = models.DateTimeField(default=timezone.now, verbose_name='下次运行时间', db_index=True)
-    schedule_start_time = models.DateTimeField(default=datetime.min, verbose_name='开始时间')
-    schedule_end_time = models.DateTimeField(default=datetime.max, verbose_name='结束时间')
-    config = common_fields.ConfigField(default=dict, verbose_name='参数')
-    status = common_fields.CharField(default=ScheduleStatus.OPENING.value, verbose_name='状态',
-                                     choices=ScheduleStatus.choices)
-    is_strict = models.BooleanField(default=False, verbose_name='严格模式')
-    callback = models.ForeignKey(ScheduleCallback, on_delete=models.SET_NULL,
-                                 null=True, blank=True, db_constraint=False, verbose_name='回调')
-    preserve_log = models.BooleanField(default=True, verbose_name='保留日志')
-    user = models.ForeignKey(UserModel, on_delete=models.CASCADE, db_constraint=False, verbose_name='最后更新')
-    create_time = models.DateTimeField(default=timezone.now, verbose_name='创建时间')
-    # 这里的update_time不能使用auto_now，因为每次next_schedule_time更新时，都会更新update_time,
-    # 这样会导致每次更新都会触发post_save且不知道啥时候更新了调度计划
-    update_time = models.DateTimeField(default=timezone.now, verbose_name='更新时间')
 
     class Meta:
         verbose_name = verbose_name_plural = '计划中心'
-        ordering = ('-priority', 'next_schedule_time')
-        abstract = True
+        db_table = 'ts_schedule'
+
+    def get_next_time(self, last_time: datetime, is_rigorous=False):
+        return get_next_schedule_time(self.schedule_type, self.config, last_time, is_rigorous)
 
     def __str__(self):
-        return self.task.name
+        return f'{self.schedule_type}'
 
     __repr__ = __str__
 
-    def __lt__(self, other):
-        return self.priority < other.priority
 
-    def __gt__(self, other):
-        return self.priority > other.priority
-
-
-class Queue(models.Model):
-    id = models.AutoField(primary_key=True, verbose_name='ID')
-    name = models.CharField(max_length=100, verbose_name='队列名称', unique=True)
-    code = models.CharField(max_length=100, verbose_name='队列编码', unique=True, validators=[code_validator])
-    status = models.BooleanField(default=True, verbose_name='状态')
-    module = models.CharField(max_length=100, verbose_name='队列类型',
-                              default=ScheduleQueueModule.DEFAULT,
-                              choices=ScheduleQueueModule.choices)
-    config = models.JSONField(default=dict, verbose_name='配置', null=True, blank=True)
-    user = models.ForeignKey(UserModel, on_delete=models.CASCADE, db_constraint=False, verbose_name='最后更新')
+class Exchange(models.Model):
+    name = models.CharField(max_length=100, verbose_name='名称', unique=True)
+    type = models.CharField(max_length=10, verbose_name='类型', choices=ExchangeType.choices,
+                            default=ExchangeType.Direct)
+    is_default = models.BooleanField(default=False, verbose_name='是否默认')
     create_time = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
     update_time = models.DateTimeField(auto_now=True, verbose_name='更新时间')
 
-    queue = None
+    class Meta:
+        verbose_name = verbose_name_plural = '路由交换'
+        db_table = 'ts_exchange'
+
+    @property
+    def default(self):
+        default = self.objects.filter(is_default=True).first() or self.objects.first()
+        if not default:
+            default = self.objects.create(name='task', is_default=True)
+        return default
+
+    def __str__(self):
+        return self.name
+
+    __repr__ = __str__
+
+
+class Queue(models.Model):
+    exchange = models.ForeignKey(Exchange, verbose_name='交换机', on_delete=models.DO_NOTHING, db_constraint=False)
+    connection = models.CharField(max_length=200, verbose_name='链接')
+    name = models.CharField(max_length=100, verbose_name='队列名称', unique=True)
+    code = models.CharField(max_length=100, verbose_name='队列编码', primary_key=True, validators=[code_validator])
+    status = models.BooleanField(default=True, verbose_name='状态')
+    is_default = models.BooleanField(default=False, verbose_name='是否默认')
+    config = models.JSONField(default=dict, verbose_name='配置', null=True, blank=True)
+    create_time = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
+    update_time = models.DateTimeField(auto_now=True, verbose_name='更新时间')
 
     class Meta:
-        verbose_name = verbose_name_plural = '计划队列'
-        db_table = 'schedule_queue'
+        verbose_name = verbose_name_plural = '任务队列'
+        db_table = 'ts_queue'
+
+    @property
+    def default(self):
+        default = self.objects.filter(is_default=True).first() or self.objects.first()
+        if not default:
+            raise ValueError("还没有默认的Queue, 请配置")
+        return default
 
     def __str__(self):
         return "%s(%s)" % (self.name, self.code)
 
 
+class Task(models.Model):
+    id = models.UUIDField(primary_key=True, editable=False, default=uuid.uuid4, verbose_name='UUID')
+    schedule = models.ForeignKey(Schedule, db_constraint=False, on_delete=models.SET_NULL, null=True, blank=True)
+    parent = models.ForeignKey('self', db_constraint=False, on_delete=models.CASCADE,
+                               null=True, blank=True, verbose_name='父任务')
+    name = models.CharField(max_length=100, verbose_name='任务名', unique=True)
+    function = models.CharField(max_length=200, verbose_name='任务函数', null=True, blank=True)
+    category = models.ForeignKey(Category, db_constraint=False, on_delete=models.DO_NOTHING, verbose_name='类别')
+    tags = models.ManyToManyField(Tag, db_constraint=False, verbose_name='标签')
+    description = models.TextField(blank=True, null=True, verbose_name='描述')
+    priority = models.IntegerField(default=0, verbose_name='优先级')
+    next_start_time = models.DateTimeField(default=datetime.max, verbose_name='下次运行时间', db_index=True)
+    is_rigorous = models.BooleanField(default=False, verbose_name='严格模式')
+    callback = models.CharField(max_length=500, null=True, blank=True, verbose_name='回调')
+    preserve_log = models.BooleanField(default=True, verbose_name='保留日志')
+    config = models.JSONField(blank=True, null=True, verbose_name='参数')
+    enabled = models.BooleanField(default=True, verbose_name='启用')
+    queue = models.ForeignKey(Queue, db_constraint=False, on_delete=models.SET_NULL, null=True, blank=True,
+                              verbose_name='队列')
+    last_run_at = models.DateTimeField(blank=True, null=True, editable=False, verbose_name='上次运行时间')
+    total_run_count = models.PositiveIntegerField(default=0, editable=False,  verbose_name='运行次数')
+    create_time = models.DateTimeField(default=timezone.now, verbose_name='创建时间')
+    update_time = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+
+    class Meta:
+        verbose_name = verbose_name_plural = '任务中心'
+        db_table = 'ts_task'
+
+    def generate_next_task(self):
+        if not self.schedule:
+            return None
+        next_time = self.schedule.get_next_time(self.last_run_at, self.is_rigorous)
+        if not self.next_start_time:
+            self.enabled = False
+            # 优化数据库查询, 所以将时间置为最大
+            self.next_start_time = datetime.max
+        else:
+            self.next_start_time = next_time
+        self.save(update_fields=('next_start_time', 'enabled'))
+        return self
+
+    def __str__(self):
+        return self.name
+
+    __repr__ = __str__
+
+    def __lt__(self, other):
+        return self.priority < other.priority
+
+    def __gt__(self, other):
+        return self.priority > other.priority
+
 
 class TaskLog(models.Model):
-    id = models.AutoField(primary_key=True)
-    schedule = models.ForeignKey(settings.SCHEDULE_MODEL, db_constraint=False, on_delete=models.CASCADE,
-                                 verbose_name='任务计划', related_name='logs')
-    status = common_fields.CharField(verbose_name='运行状态', choices=ExecuteStatus.choices)
-    queue = models.CharField(max_length=100, verbose_name='队列', default='opening')
-    result = common_fields.ConfigField(blank=True, null=True, verbose_name='结果')
-    schedule_time = models.DateTimeField(verbose_name='计划时间')
+    task = models.ForeignKey(Task, db_constraint=False, on_delete=models.CASCADE,
+                             verbose_name='任务', related_name='logs')
+    state = models.CharField(verbose_name='运行状态', choices=TaskState.choices, max_length=20)
+    queue = models.CharField(max_length=100, verbose_name='队列')
+    result = models.JSONField(blank=True, null=True, verbose_name='结果')
+    start_time = models.DateTimeField(verbose_name='运行时间')
     create_time = models.DateTimeField(default=timezone.now, verbose_name='创建时间')
 
     class Meta:
         verbose_name = verbose_name_plural = '计划日志'
         ordering = ('-create_time',)
-        db_table = 'schedule_log'
-        swappable = 'SCHEDULE_LOG_MODEL'
+        db_table = 'ts_task_log'
 
     def __str__(self):
-        return "schedule: %s, status: %s" % (self.schedule, self.status)
+        return "task: %s, status: %s" % (self.task, self.state)
 
     __repr__ = __str__
 
 
-class ScheduleQueuePermission(models.Model):
-    id = models.AutoField(primary_key=True, verbose_name='ID')
-    queue = models.ForeignKey(ScheduleQueue, db_constraint=False, on_delete=models.CASCADE, verbose_name='队列')
-    type = models.CharField(max_length=1, verbose_name='类型',
-                            default=PermissionType.IP_WHITE_LIST,
-                            choices=PermissionType.choices)
-    status = models.BooleanField(default=True, verbose_name='启用状态')
-    config = models.JSONField(default=dict, verbose_name='配置', null=True, blank=True)
-    user = models.ForeignKey(UserModel, on_delete=models.CASCADE, db_constraint=False, verbose_name='最后更新')
+class QueueIPWhitelist(models.Model):
+    queue = models.ForeignKey(Queue, db_constraint=False, on_delete=models.CASCADE, verbose_name='队列')
+    enabled = models.BooleanField(default=True, verbose_name='启用状态')
+    allowed_ip = models.GenericIPAddressField(verbose_name='白名单IP')
     create_time = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
     update_time = models.DateTimeField(auto_now=True, verbose_name='更新时间')
 
     class Meta:
-        verbose_name = verbose_name_plural = '队列权限'
-        unique_together = ('queue', 'status')
-        db_table = 'schedule_queue_permission'
+        verbose_name = verbose_name_plural = 'IP白名单'
+        unique_together = ('queue', 'allowed_ip')
+        db_table = 'ts_queue_ip_whitelist'
 
     def __str__(self):
-        return self.queue.name
+        return '%s: %s' % (self.queue, self.allowed_ip)
 
     __repr__ = __str__
-

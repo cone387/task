@@ -1,9 +1,14 @@
-from django.db.models import TextChoices, IntegerChoices
+from django.db.models import TextChoices
 
 
-class TaskStatus(TextChoices):
-    ENABLE = 'E', '启用'
-    DISABLE = 'D', '禁用'
+class TaskState(TextChoices):
+    PENDING = 'PENDING'
+    RECEIVED = 'RECEIVED'
+    STARTED = 'STARTED'
+    SUCCESS = 'SUCCESS'
+    FAILURE = 'FAILURE'
+    RETRY = 'RETRY'
+    REVOKED = 'REVOKED'
 
 
 class ScheduleStatus(TextChoices):
@@ -16,10 +21,18 @@ class ScheduleStatus(TextChoices):
 
 
 class ScheduleType(TextChoices):
-    CRONTAB = 'C', 'Crontab'
-    ONCE = 'O', '一次性'
-    CONTINUOUS = 'S', '连续性'
-    TIMINGS = 'T', '指定时间'
+    CRONTAB = 'crontab', 'Crontab'
+    Clocked = 'clocked', '指定时间'
+    Interval = 'interval', '连续性'
+    Timing = 'timing', '指定时间'
+    NLP = 'nlp', 'NLP'
+
+
+class IntervalPeriodType(TextChoices):
+    Days = 'days', '天'
+    Hours = 'hours', '小时'
+    Minutes = 'minutes', '分钟'
+    Seconds = 'seconds', '秒'
 
 
 class ScheduleTimingType(TextChoices):
@@ -30,7 +43,7 @@ class ScheduleTimingType(TextChoices):
     DATETIME = 'DATETIME', '自选日期'
 
 
-class ScheduleCallbackStatus(TextChoices):
-    ENABLE = 'E', '启用'
-    DISABLE = 'D', '禁用'
-
+class ExchangeType(TextChoices):
+    Direct = 'direct'
+    Topic = 'topic'
+    Fanout = 'fanout'
