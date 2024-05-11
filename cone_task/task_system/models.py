@@ -93,8 +93,8 @@ class Exchange(models.Model):
 class Queue(models.Model):
     exchange = models.ForeignKey(Exchange, verbose_name='交换机', on_delete=models.DO_NOTHING, db_constraint=False)
     connection = models.CharField(max_length=200, verbose_name='链接')
-    name = models.CharField(max_length=100, verbose_name='队列名称', unique=True)
-    code = models.CharField(max_length=100, verbose_name='队列编码', primary_key=True, validators=[code_validator])
+    name = models.CharField(max_length=100, verbose_name='队列编码', primary_key=True, validators=[code_validator])
+    routing_key = models.CharField(max_length=100, verbose_name='路由键')
     status = models.BooleanField(default=True, verbose_name='状态')
     is_default = models.BooleanField(default=False, verbose_name='是否默认')
     config = models.JSONField(default=dict, verbose_name='配置', null=True, blank=True)
@@ -113,7 +113,7 @@ class Queue(models.Model):
         return default
 
     def __str__(self):
-        return "%s(%s)" % (self.name, self.code)
+        return self.name
 
 
 class Task(models.Model):

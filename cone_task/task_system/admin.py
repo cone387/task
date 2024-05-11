@@ -1,10 +1,18 @@
 from django.contrib import admin
 from django.db.models import Exists, OuterRef, Q
+from django.urls import reverse
 from django.utils.html import format_html
+from django.utils.safestring import mark_safe
+
 from . import forms
 from . import models
 from .choices import ScheduleType, ScheduleTimingType
+from datetime import datetime
 import uuid
+from django.conf import settings
+
+
+admin_prefix = settings.FORCE_SCRIPT_NAME if settings.FORCE_SCRIPT_NAME else '/'
 
 
 class CategoryAdmin(admin.ModelAdmin):
@@ -59,21 +67,30 @@ class ExchangeAdmin(admin.ModelAdmin):
 
 class QueueAdmin(admin.ModelAdmin):
     form = forms.QueueForm
-    schedule_get_name = 'schedule-get'
-    list_display = ('exchange', 'code', 'name', 'status', 'is_default', 'update_time')
+    list_display = ('linked_exchange', 'name', 'routing_key', 'status', 'is_default', 'consume_url', 'update_time')
     list_filter = ('exchange__name', )
-    list_display_links = ('code', )
+    list_display_links = ('name', )
 
     fields = (
         'exchange',
-        ('code', 'status', 'is_default'),
-        'name',
+        ('name', 'status', 'is_default'),
+        'routing_key',
         'connection',
         'config'
     )
 
     def get_queryset(self, request):
         return super(QueueAdmin, self).get_queryset(request).select_related('exchange')
+
+    def linked_exchange(self, queue):
+        url = f'{admin_prefix}admin/task_system/exchange/{queue.exchange_id}/'
+        return mark_safe(f'<a href="{url}">{queue.exchange}</a>')
+    linked_exchange.short_description = '交换机'
+
+    def consume_url(self, queue):
+        url = reverse('task-get', args=(queue.exchange.name, queue.name, queue.routing_key))
+        return mark_safe(f'<a href="{url}" target="_blank">地址</a>')
+    consume_url.short_description = '消费地址'
 
 
 class TaskParentFilter(admin.SimpleListFilter):
@@ -99,7 +116,7 @@ class TaskParentFilter(admin.SimpleListFilter):
 
 
 class TaskAdmin(admin.ModelAdmin):
-    list_display = ('name', 'admin_parent', 'next_start_time', 'enabled', 'is_rigorous', 'queue', 'update_time')
+    list_display = ('name', 'admin_parent', 'next_start_time', 'enabled', 'is_rigorous', 'queue', 'put', 'update_time')
     fields = (
         'category',
         'parent',
@@ -108,12 +125,14 @@ class TaskAdmin(admin.ModelAdmin):
         ('name',),
         "function",
         'callback',
+        'tags',
         "config",
         'description',
     )
     list_display_links = ['name']
     list_filter = ('category', 'tags', TaskParentFilter)
     filter_horizontal = ('tags',)
+    form = forms.TaskForm
 
     def admin_parent(self, obj):
         if obj.parent:
@@ -126,6 +145,11 @@ class TaskAdmin(admin.ModelAdmin):
 
     def get_queryset(self, request):
         return super().get_queryset(request).select_related('parent', 'category').prefetch_related('tags')
+
+    def put(self, task: models.Task):
+        url = reverse('task-put', args=(task.queue.exchange.name, task.queue.name, task.queue.routing_key)) + '?task_id=%s' % task.id
+        return mark_safe(f'<a href="{url}" target="_blank">运行</a>')
+    put.short_description = '运行'
 
 
 class TaskLogAdmin(admin.ModelAdmin):
@@ -150,6 +174,8 @@ class QueueIPWhitelistAdmin(admin.ModelAdmin):
     )
 
 
+admin.site.register(models.Category, CategoryAdmin)
+admin.site.register(models.Tag, TagAdmin)
 admin.site.register(models.Exchange, ExchangeAdmin)
 admin.site.register(models.Queue, QueueAdmin)
 admin.site.register(models.Schedule, ScheduleAdmin)
